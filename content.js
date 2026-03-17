@@ -12,6 +12,12 @@
   let popover = null;
   let enforceInterval = null;
 
+  // ── Web Audio API state ─────────────────────────────────────
+  let audioCtx = null;
+  let audioSource = null;
+  let pitchNode = null;
+  let audioSetupVideo = null; // track which video element we've set up
+
   // ── Storage ─────────────────────────────────────────────────
   function loadSettings(callback) {
     chrome.storage.local.get(["ytps_speed", "ytps_pitch"], (data) => {
@@ -35,6 +41,7 @@
       currentSpeed = msg.speed;
       currentPitch = msg.pitch;
       forceApply();
+      updatePitchNode();
       syncAllUI();
       sendResponse({ ok: true });
     }
@@ -45,22 +52,148 @@
     return document.querySelector("video.html5-main-video") || document.querySelector("video");
   }
 
+  // ── Web Audio pitch shifter setup ───────────────────────────
+  function setupAudioPipeline(video) {
+    if (!video || audioSetupVideo === video) return;
+
+    // Clean up previous pipeline
+    if (audioCtx) {
+      try { audioCtx.close(); } catch (e) {}
+      audioCtx = null;
+      audioSource = null;
+      pitchNode = null;
+    }
+
+    try {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      audioSource = audioCtx.createMediaElementSource(video);
+
+      // Granular OLA pitch shifter via ScriptProcessorNode
+      const BUF_SIZE = 4096;      // process buffer
+      const CIRC_SIZE = 16384;    // circular buffer
+      const GRAIN_SIZE = 2048;    // grain size
+      const HALF_GRAIN = GRAIN_SIZE >> 1;
+
+      pitchNode = audioCtx.createScriptProcessor(BUF_SIZE, 2, 2);
+
+      // Per-channel circular buffers
+      const circBuf = [new Float32Array(CIRC_SIZE), new Float32Array(CIRC_SIZE)];
+      let wp = 0;
+      let rp1 = 0;
+      let rp2 = HALF_GRAIN;
+      let sampleCount = 0;
+
+      pitchNode.onaudioprocess = function (e) {
+        const pitchFactor = Math.pow(2, currentPitch / 12);
+        const numCh = Math.min(e.inputBuffer.numberOfChannels, e.outputBuffer.numberOfChannels);
+        const len = e.inputBuffer.length;
+
+        // Passthrough when no pitch shift
+        if (Math.abs(pitchFactor - 1.0) < 0.001) {
+          for (let ch = 0; ch < numCh; ch++) {
+            e.outputBuffer.getChannelData(ch).set(e.inputBuffer.getChannelData(ch));
+          }
+          return;
+        }
+
+        const inData = [];
+        const outData = [];
+        for (let ch = 0; ch < numCh; ch++) {
+          inData.push(e.inputBuffer.getChannelData(ch));
+          outData.push(e.outputBuffer.getChannelData(ch));
+        }
+
+        for (let i = 0; i < len; i++) {
+          // Write input to circular buffer
+          for (let ch = 0; ch < numCh; ch++) {
+            circBuf[ch][wp] = inData[ch][i];
+          }
+
+          // Read from two overlapping grain positions with Hann crossfade
+          const ri1 = Math.floor(rp1);
+          const rf1 = rp1 - ri1;
+          const i1a = ((ri1 % CIRC_SIZE) + CIRC_SIZE) % CIRC_SIZE;
+          const i1b = (i1a + 1) % CIRC_SIZE;
+
+          const ri2 = Math.floor(rp2);
+          const rf2 = rp2 - ri2;
+          const i2a = ((ri2 % CIRC_SIZE) + CIRC_SIZE) % CIRC_SIZE;
+          const i2b = (i2a + 1) % CIRC_SIZE;
+
+          // Hann window phases based on sample count within grain
+          const phase1 = (sampleCount % GRAIN_SIZE) / GRAIN_SIZE;
+          const phase2 = ((sampleCount + HALF_GRAIN) % GRAIN_SIZE) / GRAIN_SIZE;
+          const w1 = 0.5 * (1 - Math.cos(2 * Math.PI * phase1));
+          const w2 = 0.5 * (1 - Math.cos(2 * Math.PI * phase2));
+          const wSum = w1 + w2 || 1;
+
+          for (let ch = 0; ch < numCh; ch++) {
+            const s1 = circBuf[ch][i1a] * (1 - rf1) + circBuf[ch][i1b] * rf1;
+            const s2 = circBuf[ch][i2a] * (1 - rf2) + circBuf[ch][i2b] * rf2;
+            outData[ch][i] = (s1 * w1 + s2 * w2) / wSum;
+          }
+
+          // Advance pointers
+          wp = (wp + 1) % CIRC_SIZE;
+          rp1 += pitchFactor;
+          rp2 += pitchFactor;
+          sampleCount++;
+
+          // Wrap read pointers
+          while (rp1 >= CIRC_SIZE) rp1 -= CIRC_SIZE;
+          while (rp1 < 0) rp1 += CIRC_SIZE;
+          while (rp2 >= CIRC_SIZE) rp2 -= CIRC_SIZE;
+          while (rp2 < 0) rp2 += CIRC_SIZE;
+
+          // Keep read pointers at safe distance from write pointer
+          const dist1 = (wp - Math.floor(rp1) + CIRC_SIZE) % CIRC_SIZE;
+          if (dist1 < GRAIN_SIZE * 2 || dist1 > CIRC_SIZE - GRAIN_SIZE * 2) {
+            rp1 = (wp - CIRC_SIZE / 2 + CIRC_SIZE) % CIRC_SIZE;
+            rp2 = (rp1 + HALF_GRAIN) % CIRC_SIZE;
+          }
+        }
+      };
+
+      audioSource.connect(pitchNode);
+      pitchNode.connect(audioCtx.destination);
+      audioSetupVideo = video;
+
+      // Resume audio context if suspended
+      if (audioCtx.state === "suspended") {
+        audioCtx.resume();
+      }
+
+      console.log("[YTPS] Web Audio pitch shifter initialized");
+    } catch (err) {
+      console.warn("[YTPS] Audio pipeline setup failed:", err);
+      audioCtx = null;
+      audioSource = null;
+      pitchNode = null;
+      audioSetupVideo = null;
+    }
+  }
+
+  function updatePitchNode() {
+    // Resume audio context on pitch change (handles suspended state)
+    if (audioCtx && audioCtx.state === "suspended") {
+      audioCtx.resume();
+    }
+  }
+
+  function isWebAudioActive() {
+    return audioCtx && audioSource && pitchNode && audioSetupVideo;
+  }
+
+  // ── Apply settings ──────────────────────────────────────────
   function applySettings() {
     const video = getVideo();
     if (!video) return;
 
-    if (currentPitch === 0) {
-      video.preservesPitch = true;
-      video.mozPreservesPitch = true;
-      video.webkitPreservesPitch = true;
-      video.playbackRate = currentSpeed;
-    } else {
-      const pitchRatio = Math.pow(2, currentPitch / 12);
-      video.preservesPitch = false;
-      video.mozPreservesPitch = false;
-      video.webkitPreservesPitch = false;
-      video.playbackRate = currentSpeed * pitchRatio;
-    }
+    // Always use preservesPitch=true; pitch is handled by Web Audio
+    video.preservesPitch = true;
+    video.mozPreservesPitch = true;
+    video.webkitPreservesPitch = true;
+    video.playbackRate = currentSpeed;
   }
 
   function hookVideoElement() {
@@ -80,6 +213,7 @@
             descriptor.set.call(video, val);
             return;
           }
+          // Only allow YouTube's set if we haven't changed speed
           if (currentSpeed === 1.0 && currentPitch === 0) {
             _rate = val;
             descriptor.set.call(video, val);
@@ -123,26 +257,26 @@
     enforceInterval = setInterval(() => {
       const video = getVideo();
       if (!video) return;
-      const desired = currentPitch === 0
-        ? currentSpeed
-        : currentSpeed * Math.pow(2, currentPitch / 12);
-      if (Math.abs(video.playbackRate - desired) > 0.01) {
+
+      // Speed is always just currentSpeed now
+      if (Math.abs(video.playbackRate - currentSpeed) > 0.01) {
         forceApply();
+      }
+
+      // Try to set up audio pipeline if not done yet
+      if (!isWebAudioActive() && video) {
+        setupAudioPipeline(video);
       }
     }, 500);
   }
 
   // ── Sync all UI elements ────────────────────────────────────
   function syncAllUI() {
-    // Mini panel badge
     if (miniPanel) {
       const badge = miniPanel.querySelector(".ytps-mini-text");
-      if (badge) {
-        badge.textContent = formatMiniText();
-      }
+      if (badge) badge.textContent = formatMiniText();
     }
 
-    // Floating panel
     if (panel) {
       const ss = panel.querySelector("#speed-slider");
       const sv = panel.querySelector("#speed-value");
@@ -154,7 +288,6 @@
       updatePresetButtons(panel, "pitch", currentPitch);
     }
 
-    // Player popover
     if (popover) {
       const ss = popover.querySelector("#ytps-pop-speed-slider");
       const sv = popover.querySelector("#ytps-pop-speed-value");
@@ -176,14 +309,12 @@
     return "1.00x";
   }
 
-  // ── Mini floating panel (bottom-right of player) ────────────
+  // ── Mini floating panel (bottom-right) ──────────────────────
   function createMiniPanel() {
     miniPanel = document.createElement("div");
     miniPanel.id = "yt-pitch-speed-panel";
     miniPanel.className = "ytps-mini";
-    miniPanel.innerHTML = `
-      <span class="ytps-mini-text">${formatMiniText()}</span>
-    `;
+    miniPanel.innerHTML = `<span class="ytps-mini-text">${formatMiniText()}</span>`;
     miniPanel.addEventListener("click", (e) => {
       e.stopPropagation();
       if (panel) {
@@ -193,7 +324,7 @@
     document.body.appendChild(miniPanel);
   }
 
-  // ── Full floating panel (expandable) ────────────────────────
+  // ── Full floating panel ─────────────────────────────────────
   function createPanel() {
     panel = document.createElement("div");
     panel.id = "ytps-full-panel";
@@ -250,114 +381,80 @@
     `;
     document.body.appendChild(panel);
 
-    // Drag
     makeDraggable(panel, panel.querySelector(".panel-header"));
 
-    // Speed slider
     const speedSlider = panel.querySelector("#speed-slider");
     const speedValue = panel.querySelector("#speed-value");
     speedSlider.addEventListener("input", () => {
       currentSpeed = parseFloat(speedSlider.value);
       speedValue.textContent = currentSpeed.toFixed(2) + "x";
       updatePresetButtons(panel, "speed", currentSpeed);
-      forceApply();
-      saveSettings();
-      syncAllUI();
+      forceApply(); saveSettings(); syncAllUI();
     });
-
-    // Double-click to reset speed
     speedSlider.addEventListener("dblclick", () => {
       currentSpeed = 1.0;
-      speedSlider.value = 1;
-      speedValue.textContent = "1.00x";
+      speedSlider.value = 1; speedValue.textContent = "1.00x";
       updatePresetButtons(panel, "speed", 1);
-      forceApply();
-      saveSettings();
-      syncAllUI();
+      forceApply(); saveSettings(); syncAllUI();
     });
 
-    // Pitch slider
     const pitchSlider = panel.querySelector("#pitch-slider");
     const pitchValue = panel.querySelector("#pitch-value");
     pitchSlider.addEventListener("input", () => {
       currentPitch = parseInt(pitchSlider.value);
       pitchValue.textContent = (currentPitch > 0 ? "+" : "") + currentPitch;
       updatePresetButtons(panel, "pitch", currentPitch);
-      forceApply();
-      saveSettings();
-      syncAllUI();
+      forceApply(); updatePitchNode(); saveSettings(); syncAllUI();
     });
-
-    // Double-click to reset pitch
     pitchSlider.addEventListener("dblclick", () => {
       currentPitch = 0;
-      pitchSlider.value = 0;
-      pitchValue.textContent = "0";
+      pitchSlider.value = 0; pitchValue.textContent = "0";
       updatePresetButtons(panel, "pitch", 0);
-      forceApply();
-      saveSettings();
-      syncAllUI();
+      forceApply(); updatePitchNode(); saveSettings(); syncAllUI();
     });
 
-    // Speed presets
     panel.querySelectorAll("[data-speed]").forEach((btn) => {
       btn.addEventListener("click", () => {
         currentSpeed = parseFloat(btn.dataset.speed);
         speedSlider.value = currentSpeed;
         speedValue.textContent = currentSpeed.toFixed(2) + "x";
         updatePresetButtons(panel, "speed", currentSpeed);
-        forceApply();
-        saveSettings();
-        syncAllUI();
+        forceApply(); saveSettings(); syncAllUI();
       });
     });
 
-    // Pitch presets
     panel.querySelectorAll("[data-pitch]").forEach((btn) => {
       btn.addEventListener("click", () => {
         currentPitch = parseInt(btn.dataset.pitch);
         pitchSlider.value = currentPitch;
         pitchValue.textContent = (currentPitch > 0 ? "+" : "") + currentPitch;
         updatePresetButtons(panel, "pitch", currentPitch);
-        forceApply();
-        saveSettings();
-        syncAllUI();
+        forceApply(); updatePitchNode(); saveSettings(); syncAllUI();
       });
     });
 
-    // Reset
     panel.querySelector("#yps-reset").addEventListener("click", () => {
-      currentSpeed = 1.0;
-      currentPitch = 0;
-      speedSlider.value = 1;
-      pitchSlider.value = 0;
-      speedValue.textContent = "1.00x";
-      pitchValue.textContent = "0";
+      currentSpeed = 1.0; currentPitch = 0;
+      speedSlider.value = 1; pitchSlider.value = 0;
+      speedValue.textContent = "1.00x"; pitchValue.textContent = "0";
       updatePresetButtons(panel, "speed", 1);
       updatePresetButtons(panel, "pitch", 0);
-      forceApply();
-      clearSettings();
-      syncAllUI();
+      forceApply(); updatePitchNode(); clearSettings(); syncAllUI();
     });
 
-    // Close
     panel.querySelector("#yps-close").addEventListener("click", () => {
       panel.style.display = "none";
     });
 
-    // Set initial preset active states
     updatePresetButtons(panel, "speed", currentSpeed);
     updatePresetButtons(panel, "pitch", currentPitch);
   }
 
-  // ── Player bar embedded button & popover ────────────────────
+  // ── Player bar button & popover ─────────────────────────────
   function createPlayerButton() {
     if (playerButton) return;
-
     const rightControls = document.querySelector(".ytp-right-controls");
     if (!rightControls) return;
-
-    // Check if already inserted
     if (rightControls.querySelector(".ytps-player-btn")) return;
 
     playerButton = document.createElement("button");
@@ -367,7 +464,6 @@
       <path d="M12 3v9.28a4.39 4.39 0 0 0-1.5-.28C8.01 12 6 13.79 6 16s2.01 4 4.5 4S15 18.21 15 16V6h3V3h-6z"/>
     </svg>`;
 
-    // Insert before settings button
     const settingsBtn = rightControls.querySelector(".ytp-settings-button");
     if (settingsBtn) {
       rightControls.insertBefore(playerButton, settingsBtn);
@@ -426,7 +522,6 @@
       </div>
     `;
 
-    // Prevent click propagation to video player
     popover.addEventListener("click", (e) => e.stopPropagation());
     popover.addEventListener("mousedown", (e) => e.stopPropagation());
 
@@ -437,7 +532,6 @@
       document.body.appendChild(popover);
     }
 
-    // Wire up popover controls
     const ss = popover.querySelector("#ytps-pop-speed-slider");
     const sv = popover.querySelector("#ytps-pop-speed-value");
     const ps = popover.querySelector("#ytps-pop-pitch-slider");
@@ -449,7 +543,6 @@
       updatePresetButtons(popover, "speed", currentSpeed);
       forceApply(); saveSettings(); syncAllUI();
     });
-
     ss.addEventListener("dblclick", () => {
       currentSpeed = 1.0; ss.value = 1; sv.textContent = "1.00x";
       updatePresetButtons(popover, "speed", 1);
@@ -460,13 +553,12 @@
       currentPitch = parseInt(ps.value);
       pv.textContent = (currentPitch > 0 ? "+" : "") + currentPitch;
       updatePresetButtons(popover, "pitch", currentPitch);
-      forceApply(); saveSettings(); syncAllUI();
+      forceApply(); updatePitchNode(); saveSettings(); syncAllUI();
     });
-
     ps.addEventListener("dblclick", () => {
       currentPitch = 0; ps.value = 0; pv.textContent = "0";
       updatePresetButtons(popover, "pitch", 0);
-      forceApply(); saveSettings(); syncAllUI();
+      forceApply(); updatePitchNode(); saveSettings(); syncAllUI();
     });
 
     popover.querySelectorAll("[data-speed]").forEach((btn) => {
@@ -483,7 +575,7 @@
         currentPitch = parseInt(btn.dataset.pitch);
         ps.value = currentPitch; pv.textContent = (currentPitch > 0 ? "+" : "") + currentPitch;
         updatePresetButtons(popover, "pitch", currentPitch);
-        forceApply(); saveSettings(); syncAllUI();
+        forceApply(); updatePitchNode(); saveSettings(); syncAllUI();
       });
     });
 
@@ -493,12 +585,11 @@
       sv.textContent = "1.00x"; pv.textContent = "0";
       updatePresetButtons(popover, "speed", 1);
       updatePresetButtons(popover, "pitch", 0);
-      forceApply(); clearSettings(); syncAllUI();
+      forceApply(); updatePitchNode(); clearSettings(); syncAllUI();
     });
 
     updatePresetButtons(popover, "speed", currentSpeed);
     updatePresetButtons(popover, "pitch", currentPitch);
-
     return popover;
   }
 
@@ -507,7 +598,6 @@
     popover.classList.toggle("ytps-popover-visible");
   }
 
-  // Close popover when clicking outside
   document.addEventListener("click", (e) => {
     if (popover && popover.classList.contains("ytps-popover-visible")) {
       if (!popover.contains(e.target) && e.target !== playerButton) {
@@ -559,12 +649,12 @@
       case "ArrowUp":
         e.preventDefault();
         currentPitch = Math.min(12, currentPitch + 1);
-        forceApply(); saveSettings(); syncAllUI();
+        forceApply(); updatePitchNode(); saveSettings(); syncAllUI();
         break;
       case "ArrowDown":
         e.preventDefault();
         currentPitch = Math.max(-12, currentPitch - 1);
-        forceApply(); saveSettings(); syncAllUI();
+        forceApply(); updatePitchNode(); saveSettings(); syncAllUI();
         break;
       case "ArrowRight":
         e.preventDefault();
@@ -594,33 +684,36 @@
       createPanel();
       tryInsertPlayerButton();
 
-      // Watch for video element and hook it
       const observer = new MutationObserver(() => {
         const video = getVideo();
         if (video && !video.__ytps_hooked) {
           hookVideoElement();
           forceApply();
+          setupAudioPipeline(video);
         }
-        // Re-try player button insertion if DOM changed
         if (!playerButton) {
           createPlayerButton();
         }
       });
       observer.observe(document.body, { childList: true, subtree: true });
 
-      // Try immediate setup
       const video = getVideo();
       if (video) {
         hookVideoElement();
         forceApply();
+        setupAudioPipeline(video);
       }
 
-      // Re-apply on YouTube SPA navigation
       document.addEventListener("yt-navigate-finish", () => {
         setTimeout(() => {
+          // Reset audio pipeline for new video element
+          const newVideo = getVideo();
+          if (newVideo && newVideo !== audioSetupVideo) {
+            audioSetupVideo = null;
+            setupAudioPipeline(newVideo);
+          }
           hookVideoElement();
           forceApply();
-          // Player controls get recreated on navigation
           playerButton = null;
           if (popover) {
             popover.remove();
@@ -629,6 +722,15 @@
           tryInsertPlayerButton();
         }, 500);
       });
+
+      // Resume AudioContext on user interaction (Chrome autoplay policy)
+      const resumeAudio = () => {
+        if (audioCtx && audioCtx.state === "suspended") {
+          audioCtx.resume();
+        }
+      };
+      document.addEventListener("click", resumeAudio, { once: false });
+      document.addEventListener("keydown", resumeAudio, { once: false });
 
       startEnforcing();
       syncAllUI();
