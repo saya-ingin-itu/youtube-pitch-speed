@@ -1,0 +1,167 @@
+body {
+  margin: 0;
+  padding: 0;
+  width: 280px;
+  background: #1a1a2e;
+  font-family: 'Segoe UI', Arial, sans-serif;
+  color: #e0e0e0;
+}
+
+.popup-container {
+  padding: 14px;
+}
+
+.popup-header {
+  display: flex;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.popup-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: #fff;
+}
+
+.control-group {
+  margin-bottom: 12px;
+}
+
+.control-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.control-label span {
+  font-size: 12px;
+  color: #aaa;
+}
+
+.control-value {
+  font-size: 13px;
+  font-weight: 600;
+  color: #00d4ff;
+  min-width: 50px;
+  text-align: right;
+}
+
+.pitch-value {
+  color: #ff6b9d !important;
+}
+
+.slider-track {
+  position: relative;
+  padding: 4px 0;
+}
+
+.slider-track::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  width: 2px;
+  height: 12px;
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.25);
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.slider-track.speed-track::after {
+  left: 27.27%;
+}
+
+.slider-track.pitch-track::after {
+  left: 50%;
+}
+
+.control-slider {
+  width: 100%;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 3px;
+  background: #2a2a4a;
+  outline: none;
+}
+
+.control-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #00d4ff;
+  cursor: pointer;
+  border: 2px solid #1a1a2e;
+  box-shadow: 0 0 6px rgba(0, 212, 255, 0.4);
+}
+
+.control-slider.pitch-slider::-webkit-slider-thumb {
+  background: #ff6b9d;
+  box-shadow: 0 0 6px rgba(255, 107, 157, 0.4);
+}
+
+.button-row {
+  display: flex;
+  gap: 4px;
+  margin-top: 4px;
+}
+
+.preset-btn {
+  flex: 1;
+  padding: 4px 6px;
+  border: 1px solid #333;
+  border-radius: 6px;
+  background: #2a2a4a;
+  color: #ccc;
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.preset-btn:hover {
+  background: #3a3a5a;
+  border-color: #555;
+  color: #fff;
+}
+
+.preset-btn.active {
+  background: #00d4ff22;
+  border-color: #00d4ff;
+  color: #00d4ff;
+}
+
+.reset-btn {
+  width: 100%;
+  padding: 7px;
+  border: 1px solid #444;
+  border-radius: 8px;
+  background: #2a2a4a;
+  color: #ccc;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.reset-btn:hover {
+  background: #3a3a5a;
+  color: #fff;
+}
+
+.popup-status {
+  font-size: 11px;
+  text-align: center;
+  margin-top: 8px;
+  min-height: 16px;
+}
+
+.popup-status.success {
+  color: #4caf50;
+}
+
+.popup-status.error {
+  color: #ff6b6b;
+}

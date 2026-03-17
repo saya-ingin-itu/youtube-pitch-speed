@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <div class="popup-header">
+      <span class="popup-title">Pitch & Speed</span>
+    </div>
+    <div class="control-group">
+      <div class="control-label">
+        <span>再生速度</span>
+        <span class="control-value" id="speed-value">1.00x</span>
+      </div>
+      <div class="slider-track speed-track">
+        <input type="range" class="control-slider" id="speed-slider"
+               min="0.25" max="3" step="0.05" value="1">
+      </div>
+      <div class="button-row">
+        <button class="preset-btn" data-speed="0.5">0.5x</button>
+        <button class="preset-btn" data-speed="0.75">0.75x</button>
+        <button class="preset-btn active" data-speed="1">1.0x</button>
+        <button class="preset-btn" data-speed="1.5">1.5x</button>
+        <button class="preset-btn" data-speed="2">2.0x</button>
+      </div>
+    </div>
+    <div class="control-group">
+      <div class="control-label">
+        <span>ピッチ（半音）</span>
+        <span class="control-value pitch-value" id="pitch-value">0</span>
+      </div>
+      <div class="slider-track pitch-track">
+        <input type="range" class="control-slider pitch-slider" id="pitch-slider"
+               min="-12" max="12" step="1" value="0">
+      </div>
+      <div class="button-row">
+        <button class="preset-btn" data-pitch="-3">-3</button>
+        <button class="preset-btn" data-pitch="-1">-1</button>
+        <button class="preset-btn active" data-pitch="0">0</button>
+        <button class="preset-btn" data-pitch="1">+1</button>
+        <button class="preset-btn" data-pitch="3">+3</button>
+      </div>
+    </div>
+    <button class="reset-btn" id="popup-reset">リセット</button>
+    <div class="popup-status" id="popup-status"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

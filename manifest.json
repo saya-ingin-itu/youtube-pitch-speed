@@ -1,0 +1,26 @@
+{
+  "manifest_version": 3,
+  "name": "YouTube Pitch & Speed Controller",
+  "version": "1.1.0",
+  "description": "YouTubeの再生速度とピッチを独立して変更できる拡張機能",
+  "permissions": ["activeTab", "storage"],
+  "icons": {
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.youtube.com/*"],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}
